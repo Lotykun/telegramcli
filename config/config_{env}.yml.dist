@@ -1,0 +1,13 @@
+parameters:
+    host: "{host}"
+    token: "{token}"
+    chat_id: "{chatid}"
+    actions:
+        {actionName}:
+            type: "{type}"
+            command: "{command} {param1} {param2}"
+            params:
+                {param1}:
+                    value: "{valueParam1}"
+                {param2}:
+                    type: "{typeParam2}"
