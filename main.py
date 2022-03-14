@@ -27,7 +27,7 @@ def get_project_path():
 
 
 def get_config():
-    config_file = get_project_path() + "/config_" + args.environment + ".yml"
+    config_file = get_project_path() + "/config/config_" + args.environment + ".yml"
     with open(config_file) as f:
         data = yaml.load(f, Loader=yaml.FullLoader)
     return data
