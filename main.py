@@ -17,7 +17,7 @@ from subprocess import Popen
 from subprocess import PIPE
 import signal
 import shlex
-from action import ScriptAction
+from action import Action
 from action import SendSignalScriptAction
 from update import Update
 
@@ -143,18 +143,22 @@ def process_action(msg):
     action_class = get_class('action.' + action_class_name)
     try:
         action = action_class(config=action_config)
-        db.session.add(action)
-        db.session.commit()
+        action.save()
         action_response = action.execute()
         if action_response['response']:
-            send_message(chat_id, action_config['confirmed_msg'])
+            telegram_msg = action_config['confirmed_msg']
         else:
-            send_message(chat_id, action_response['msg'])
+            telegram_msg = action_response['msg']
+        send_message(chat_id, telegram_msg)
     except Exception as err:
         ex_type = type(err).__name__
         ex_message = str(err)
         err_message = 'Exception: ' + str(ex_type) + ' Message: ' + ex_message
         logging.error(err_message)
+        ext_data = {'msg': action_config['name'] + ' ' + action_config['type'] + ' Failed:' + err_message}
+        action.status = action.STATUSES['stopped']
+        action.extra_data = json.dumps(ext_data)
+        action.save()
         send_message(chat_id, action_config['name'] + ' ' + action_config['type'] + ' Failed:' + err_message)
         return False
     return True

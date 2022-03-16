@@ -53,14 +53,6 @@ class Action(db.Base):
     def __str__(self):
         return self.updated_at.strftime("%Y-%m-%d %H:%M:%S") + ' ' + self.type + ' ' + self.status
 
-    def execute(self):
-        pass
-
-    def allow_execute(self):
-        pass
-
-
-class ScriptAction(Action):
     def allow_execute(self):
         result = {'response': True}
         same_action = db.session.query(Action).filter_by(name=self.name, type=self.type,
@@ -70,6 +62,38 @@ class ScriptAction(Action):
             result['msg'] = 'There is one same running action, cant start another'
         return result
 
+    def create_command(self):
+        result = {'response': True, 'command': self.config['command']}
+        for keyparam, param in self.config['params'].items():
+            if 'value' in param.keys():
+                result['command'] = result['command'].replace('{' + keyparam + '}', param['value'])
+            else:
+                if param['type'] == "datetime":
+                    now = datetime.now()
+                    result['command'] = result['command'].replace('{' + keyparam + '}', now.strftime("%Y%m%d%H%M%S"))
+                elif param['type'] == "database":
+                    parts = self.config['depends'].split(':')
+                    depends_action = db.session.query(Action).filter_by(name=parts[1], type=parts[0],
+                                                                        status=self.STATUSES['running']).first()
+                    if depends_action is not None:
+                        data = json.loads(depends_action.extra_data)
+                        result['command'] = result['command'].replace('{' + keyparam + '}', str(data[keyparam]))
+                    else:
+                        result['response'] = False
+                        result['msg'] = 'There is no depend script to this remote script'
+        return result
+
+    def save(self):
+        self.updated_at = datetime.now()
+        db.session.add(self)
+        db.session.commit()
+        return self
+
+    def execute(self):
+        pass
+
+
+class ScriptAction(Action):
     def execute(self):
         result = {}
         logging.info('init script action: ' + self.name)
@@ -152,23 +176,13 @@ class SendSignalScriptAction(Action):
         return result
 
 
-class RemoteScriptAction(ScriptAction):
-    def create_command(self):
-        result = {'response': True, 'command': self.config['command']}
-        for keyparam, param in self.config['params'].items():
-            if 'value' in param.keys():
-                result['command'] = result['command'].replace('{' + keyparam + '}', param['value'])
-            else:
-                if param['type'] == "datetime":
-                    now = datetime.now()
-                    result['command'] = result['command'].replace('{' + keyparam + '}', now.strftime("%Y%m%d%H%M%S"))
-        return result
-
-    def get_returned_data(self, out_script):
+class RemoteScriptAction(Action):
+    def get_returned_data(self, out_script, command):
         result = {}
         for keyparam, param in self.config['returned_data'].items():
             if param['type'] == 'integer':
                 result[keyparam] = int(re.search(keyparam + ": (\d*)", out_script).group(1)) + 1
+        result['command'] = command
         result = json.dumps(result)
         return result
 
@@ -191,7 +205,7 @@ class RemoteScriptAction(ScriptAction):
                 if self.config['confirmed_run'] in out:
                     logging.info(out)
                     self.status = self.STATUSES['running']
-                    self.extra_data = self.get_returned_data(out)
+                    self.extra_data = self.get_returned_data(out, command_res['command'])
                     result['response'] = True
                     result['name'] = self.name
                     result['type'] = self.type
@@ -207,9 +221,7 @@ class RemoteScriptAction(ScriptAction):
         else:
             result['msg'] = allow['msg']
             self.status = self.STATUSES['stopped']
-        self.updated_at = datetime.now()
-        db.session.add(self)
-        db.session.commit()
+        self.save()
         return result
 
 
@@ -226,26 +238,12 @@ class SendSignalRemoteScriptAction(RemoteScriptAction):
             result['msg'] = 'There is no running script to send signal'
         return result
 
-    def create_command(self):
-        result = {'response': True, 'command': self.config['command']}
-        for keyparam, param in self.config['params'].items():
-            if param['type'] == "database":
-                parts = self.config['depends'].split(':')
-                depends_action = db.session.query(Action).filter_by(name=parts[1], type=parts[0],
-                                                                 status=self.STATUSES['running']).first()
-                if depends_action is None:
-                    result['response'] = False
-                    result['msg'] = 'There is no depend script to this remote script'
-                else:
-                    data = json.loads(depends_action.extra_data)
-                    result['command'] = result['command'].replace('{' + keyparam + '}', str(data[keyparam]))
-        return result
-
-    def get_returned_data(self, out_script):
+    def get_returned_data(self, out_script, command):
         result = {}
         for keyparam, param in self.config['returned_data'].items():
             if param['type'] == 'integer':
                 result[keyparam] = int(re.search(keyparam + ": (\d*)", out_script).group(1))
+        result['command'] = command
         result = json.dumps(result)
         return result
 
@@ -268,17 +266,12 @@ class SendSignalRemoteScriptAction(RemoteScriptAction):
                 if self.config['confirmed_run'] in out:
                     logging.info(out)
                     self.status = self.STATUSES['running']
-                    self.extra_data = self.get_returned_data(out)
+                    self.extra_data = self.get_returned_data(out, command_res['command'])
 
                     allow['script_action'].status = self.STATUSES['finished']
-                    allow['script_action'].updated_at = datetime.now()
-                    db.session.add(allow['script_action'])
-                    db.session.commit()
+                    allow['script_action'].save()
 
                     self.status = self.STATUSES['finished']
-                    self.updated_at = datetime.now()
-                    db.session.add(self)
-                    db.session.commit()
                     result['response'] = True
                     result['name'] = self.name
                     result['type'] = self.type
@@ -294,7 +287,5 @@ class SendSignalRemoteScriptAction(RemoteScriptAction):
         else:
             result['msg'] = allow['msg']
             self.status = self.STATUSES['stopped']
-        self.updated_at = datetime.now()
-        db.session.add(self)
-        db.session.commit()
+        self.save()
         return result
