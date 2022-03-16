@@ -133,3 +133,4 @@ scripts/
 *.yml
 *.db
 .idea/
+tmp/*.mp4

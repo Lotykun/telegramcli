@@ -44,7 +44,7 @@ class Action(db.Base):
         self.status = self.STATUSES['init']
         self.config = kwargs['config']
         if 'extradata' in kwargs.keys():
-            self.extra_data = kwargs['extradata']
+            self.extra_data = json.dumps(kwargs['extradata'])
 
     def __repr__(self):
         return f'Action(type={self.type}, created_at={self.created_at}, ' \
@@ -60,27 +60,6 @@ class Action(db.Base):
         if same_action is not None:
             result['response'] = False
             result['msg'] = 'There is one same running action, cant start another'
-        return result
-
-    def create_command(self):
-        result = {'response': True, 'command': self.config['command']}
-        for keyparam, param in self.config['params'].items():
-            if 'value' in param.keys():
-                result['command'] = result['command'].replace('{' + keyparam + '}', param['value'])
-            else:
-                if param['type'] == "datetime":
-                    now = datetime.now()
-                    result['command'] = result['command'].replace('{' + keyparam + '}', now.strftime("%Y%m%d%H%M%S"))
-                elif param['type'] == "database":
-                    parts = self.config['depends'].split(':')
-                    depends_action = db.session.query(Action).filter_by(name=parts[1], type=parts[0],
-                                                                        status=self.STATUSES['running']).first()
-                    if depends_action is not None:
-                        data = json.loads(depends_action.extra_data)
-                        result['command'] = result['command'].replace('{' + keyparam + '}', str(data[keyparam]))
-                    else:
-                        result['response'] = False
-                        result['msg'] = 'There is no depend script to this remote script'
         return result
 
     def save(self):
@@ -177,11 +156,34 @@ class SendSignalScriptAction(Action):
 
 
 class RemoteScriptAction(Action):
+    def create_command(self):
+        result = {'response': True, 'command': self.config['command']}
+        for keyparam, param in self.config['params'].items():
+            if 'value' in param.keys():
+                result['command'] = result['command'].replace('{' + keyparam + '}', param['value'])
+            else:
+                if param['type'] == "datetime":
+                    now = datetime.now()
+                    result['command'] = result['command'].replace('{' + keyparam + '}', now.strftime("%Y%m%d%H%M%S"))
+                elif param['type'] == "database":
+                    parts = self.config['depends'].split(':')
+                    depends_action = db.session.query(Action).filter_by(name=parts[1], type=parts[0],
+                                                                        status=self.STATUSES['running']).first()
+                    if depends_action is not None:
+                        data = json.loads(depends_action.extra_data)
+                        result['command'] = result['command'].replace('{' + keyparam + '}', str(data[keyparam]))
+                    else:
+                        result['response'] = False
+                        result['msg'] = 'There is no depend script to this remote script'
+        return result
+
     def get_returned_data(self, out_script, command):
         result = {}
         for keyparam, param in self.config['returned_data'].items():
             if param['type'] == 'integer':
                 result[keyparam] = int(re.search(keyparam + ": (\d*)", out_script).group(1)) + 1
+            elif param['type'] == 'string':
+                result[keyparam] = re.search(keyparam + ": (.*)", out_script).group(1)
         result['command'] = command
         result = json.dumps(result)
         return result
@@ -211,15 +213,16 @@ class RemoteScriptAction(Action):
                     result['type'] = self.type
                     result['created'] = self.created_at
                     result['updated'] = self.updated_at
+                    result['msg'] = self.config['confirmed_msg'] + " " + self.extra_data
                 else:
-                    result['msg'] = 'undetermined error'
+                    result['err_msg'] = 'undetermined error'
                     self.status = self.STATUSES['stopped']
             else:
-                result['msg'] = command_res['msg']
+                result['err_msg'] = command_res['msg']
                 self.status = self.STATUSES['stopped']
             logging.info('end script action')
         else:
-            result['msg'] = allow['msg']
+            result['err_msg'] = allow['msg']
             self.status = self.STATUSES['stopped']
         self.save()
         return result
@@ -277,15 +280,60 @@ class SendSignalRemoteScriptAction(RemoteScriptAction):
                     result['type'] = self.type
                     result['created'] = self.created_at
                     result['updated'] = self.updated_at
+                    result['msg'] = self.config['confirmed_msg'] + " " + self.extra_data
                 else:
-                    result['msg'] = 'undetermined error'
+                    result['err_msg'] = 'undetermined error'
                     self.status = self.STATUSES['stopped']
             else:
-                result['msg'] = command_res['msg']
+                result['err_msg'] = command_res['msg']
                 self.status = self.STATUSES['stopped']
             logging.info('end script action')
         else:
-            result['msg'] = allow['msg']
+            result['err_msg'] = allow['msg']
             self.status = self.STATUSES['stopped']
         self.save()
+        return result
+
+
+class GetRemoteFileAction(Action):
+
+    def execute(self):
+        result = {}
+        logging.info('init script action: ' + self.name)
+        result['response'] = False
+        allow = self.allow_execute()
+        if allow['response']:
+            paramiko.util.log_to_file("paramiko.log")
+            self.status = self.STATUSES['running']
+            self.save()
+            # Open a transport
+            transport = paramiko.Transport((self.config['server'], 22))
+            transport.connect(None, self.config['user'], self.config['password'])
+            sftp = paramiko.SFTPClient.from_transport(transport)
+            data = json.loads(self.extra_data)
+
+            # Download
+            filepath = self.config['remote_path'] + "/" + data['filename']
+            localpath = os.path.dirname(os.path.abspath(__file__)) + "/tmp/" + data['filename']
+            sftp.get(filepath, localpath)
+
+            # Close
+            if sftp: sftp.close()
+            if transport: transport.close()
+
+            self.status = self.STATUSES['finished']
+            self.save()
+            result['response'] = True
+            result['name'] = self.name
+            result['type'] = self.type
+            result['created'] = self.created_at
+            result['updated'] = self.updated_at
+            result['msg'] = self.config['confirmed_msg']
+            result['file'] = localpath
+
+            logging.info('end script action')
+        else:
+            result['err_msg'] = allow['msg']
+            self.status = self.STATUSES['stopped']
+            self.save()
         return result

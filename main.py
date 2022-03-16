@@ -16,6 +16,7 @@ import subprocess
 from subprocess import Popen
 from subprocess import PIPE
 import signal
+import re
 import shlex
 from action import Action
 from action import SendSignalScriptAction
@@ -72,12 +73,35 @@ def init_log_file(filename):
     )
 
 
-def send_message(chat, text):
+def send_message(text):
     url = host + token + '/sendMessage'
     logging.debug('Request: ' + url)
     data = {'chat_id': chat, 'text': text}
     req = requests.post(url, data=data)
     logging.debug('Response: ' + str(req.content))
+    content = json.loads(req.content)
+    if content['ok']:
+        if len(content['result']) > 0:
+            logging.info('Telegram message sent')
+        else:
+            logging.error('Nothing in sending message, weird')
+    else:
+        logging.error('Content is not ok something wrong sending message')
+
+
+def send_file(file):
+    filename, file_extension = os.path.splitext(file)
+    filename = os.path.basename(file)
+    file_type = ''
+    if file_extension in ['.mp4', '.avi']:
+        file_type = 'video'
+    url = host + token + '/send' + file_type[0].upper() + file_type[1:]
+    logging.debug('Request: ' + url)
+    data = {'chat_id': chat}
+
+    files = [(file_type, (filename, open(file, 'rb'), 'application/octet-stream'))]
+    req = requests.post(url, data=data, files=files)
+    logging.info('Response: ' + str(req.content))
     content = json.loads(req.content)
     if content['ok']:
         if len(content['result']) > 0:
@@ -131,8 +155,17 @@ def format_message(msg):
     if 'grabar' in msg:
         if 'start' in msg:
             result['action_name'] = 'videoStartRecord'
+            result['action_params'] = {}
         elif 'stop' in msg:
             result['action_name'] = 'videoStopRecord'
+            result['action_params'] = {}
+    elif 'get' in msg:
+        if 'file' in msg:
+            if 'remote' in msg:
+                result['action_name'] = 'getVideoRecord'
+                name = re.search("name:(.*)", msg).group(1)
+                result['action_params'] = {'filename': name}
+
     return result
 
 
@@ -142,14 +175,17 @@ def process_action(msg):
     action_class_name = action_config['type'][0].upper() + action_config['type'][1:] + 'Action'
     action_class = get_class('action.' + action_class_name)
     try:
-        action = action_class(config=action_config)
+        action = action_class(config=action_config, extradata=msg['action_params'])
         action.save()
         action_response = action.execute()
         if action_response['response']:
-            telegram_msg = action_config['confirmed_msg']
-        else:
             telegram_msg = action_response['msg']
-        send_message(chat_id, telegram_msg)
+        else:
+            telegram_msg = action_response['err_msg']
+        if 'file' in action_response.keys():
+            send_file(action_response['file'])
+            os.remove(action_response['file'])
+        send_message(telegram_msg)
     except Exception as err:
         ex_type = type(err).__name__
         ex_message = str(err)
@@ -159,14 +195,14 @@ def process_action(msg):
         action.status = action.STATUSES['stopped']
         action.extra_data = json.dumps(ext_data)
         action.save()
-        send_message(chat_id, action_config['name'] + ' ' + action_config['type'] + ' Failed:' + err_message)
+        send_message(action_config['name'] + ' ' + action_config['type'] + ' Failed:' + err_message)
         return False
     return True
 
 
 def signal_handler(sig, frame):
     logging.info('END TELEGRAM CLI: Args: ' + str(args))
-    send_message(chat_id, 'Adios Loty!.. Hasta La Proxima')
+    send_message('Adios Loty!.. Hasta La Proxima')
     sys.exit(0)
 
 
@@ -175,20 +211,20 @@ if __name__ == '__main__':
     signal.signal(signal.SIGINT, signal_handler)
     args = parse_arguments()
     config = get_config()
+    host = config['parameters']['host']
+    token = config['parameters']['token']
+    chat = config['parameters']['chat_id']
+    now = datetime.now()
+    file_name = now.strftime("%Y%m%d%H%M%S")
+    init_log_file(filename=file_name)
     current_update = get_current_update()
     if current_update:
         current_update_number = current_update.update_number
     else:
         current_update_number = 0
         current_update = Update(num=current_update_number)
-    host = config['parameters']['host']
-    token = config['parameters']['token']
-    chat_id = config['parameters']['chat_id']
-    now = datetime.now()
-    file_name = now.strftime("%Y%m%d%H%M%S")
-    init_log_file(filename=file_name)
     logging.info('INIT TELEGRAM CLI: Args: ' + str(args))
-    send_message(chat_id, 'Hola Loty! Te escucho...')
+    send_message('Hola Loty! Te escucho...')
     action_history = []
     while True:
         res = receive_message(current_update_number)
