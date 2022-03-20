@@ -165,6 +165,10 @@ def format_message(msg):
                 result['action_name'] = 'getVideoRecord'
                 name = re.search("name:(.*)", msg).group(1)
                 result['action_params'] = {'filename': name}
+    elif 'show' in msg:
+        result['action_name'] = 'readTelegramMsg'
+        msg = re.search("msg: (.*)", msg).group(1)
+        result['action_params'] = {'msg': msg}
 
     return result
 
