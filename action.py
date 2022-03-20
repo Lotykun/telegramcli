@@ -337,3 +337,28 @@ class GetRemoteFileAction(Action):
             self.status = self.STATUSES['stopped']
             self.save()
         return result
+
+
+class ShowMsgLedAction(Action):
+
+    def execute(self):
+        result = {}
+        logging.info('init script action: ' + self.name)
+        result['response'] = False
+        allow = self.allow_execute()
+        if allow['response']:
+            self.status = self.STATUSES['running']
+            self.save()
+            result['response'] = True
+            result['name'] = self.name
+            result['type'] = self.type
+            result['created'] = self.created_at
+            result['updated'] = self.updated_at
+            result['msg'] = self.config['confirmed_msg']
+
+            logging.info('end script action')
+        else:
+            result['err_msg'] = allow['msg']
+            self.status = self.STATUSES['stopped']
+            self.save()
+        return result
